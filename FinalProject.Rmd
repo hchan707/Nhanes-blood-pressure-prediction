@@ -1,0 +1,312 @@
+---
+title: "Final Project: Predicting Blood Pressure"
+author: "Hon Chi Chan"
+date: "2026-03-18"
+output: 
+  html_document: 
+    theme: flatly
+    toc: true 
+    toc_depth: 3
+    toc_float: true
+---
+
+```{r setup, include=FALSE}
+library(haven)
+library(tidyverse)
+library(tidymodels)
+```
+
+## Introduction
+
+High blood pressure is an important human health measure and is commonly used to study heart and cardiovascular health. Understanding the factors that influence blood pressure can provide useful insights for public health research.
+
+In this project, supervised learning is used to predict systolic blood pressure using data from the [National Health and Nutrition Examination Survey (NHANES)](https://www.cdc.gov/nchs/nhanes/index.html). NHANES is a large survey conducted by the [Centers for Disease Control and Prevention (CDC)](https://www.cdc.gov/index.html) that collects health, demographic, and body measurement information from individuals across the United States.
+
+Because systolic blood pressure is a continuous variable, this prediction task is framed as a regression problem. The goal of this project is to evaluate and compare several supervised learning models in order to determine how accurately systolic blood pressure can be predicted using demographic and health-related variables.
+
+## Inspiration and Motivation
+
+Blood pressure is a key indicator of overall health and is closely related to the risk of heart disease and other medical conditions. This motivated me to use a real-world health dataset to explore how factors such as age, body mass index (BMI), and sex are related to systolic blood pressure.
+
+By applying supervised learning methods to NHANES data, this project aims to both understand these relationships and evaluate how well a predictive model can generalize to new data.
+
+## Data Description
+
+The data used in this project obtained from the National Health and Nutrition Examination Survey (NHANES). NHANES is conducted by the Centers for Disease Control and Prevention (CDC) and collects health-related data from people in the United States.
+
+```{r, echo=FALSE, fig.cap="NHANES"}
+knitr::include_graphics("NHANESLOGO.png")
+```
+
+There are three NHANES datasets used in this project: a demographics file, a body measurements file, and a blood pressure file. These datasets are merged using the participant identifier SEQN, which serves as a unique key to link information across files for the same individual.
+
+After merging the datasets, the final dataset contains several thousand observations and many variables. The response variable in this project is systolic blood pressure. A subset of demographic and body measurement variables will be used as predictors.
+
+[Demographics data](https://wwwn.cdc.gov/nchs/nhanes/search/datapage.aspx?Component=Demographics&CycleBeginYear=2017)
+
+[Blood Pessure & Body Measures data](https://wwwn.cdc.gov/nchs/nhanes/search/datapage.aspx?Component=Examination&CycleBeginYear=2017)
+
+## Exploratory Data Analysis
+
+In this section, exploratory data analysis is performed to better understand the distribution of systolic blood pressure and its relationship with selected predictors. Prior to model fitting, the data were cleaned and preprocessed. Observations with missing values in systolic blood pressure or key predictor variables were removed to ensure that only complete cases were used for modeling. Categorical variables were converted to factor variables, and continuous predictors were left on their original scales unless otherwise noted. No additional transformations were applied.
+
+### Load Data
+
+```{r}
+nhanes_demo <- read_xpt("DEMO_J.xpt")
+nhanes_body <- read_xpt("BPX_J.xpt")
+nhanes_blood <- read_xpt("BMX_J.xpt")
+```
+
+```{r, include=FALSE}
+dim(nhanes_demo)
+dim(nhanes_body)
+dim(nhanes_blood)
+
+glimpse(nhanes_demo)
+glimpse(nhanes_body)
+glimpse(nhanes_blood)
+```
+
+### Merge Data
+
+The demographic, body measurement, and blood pressure datasets were merged using the participant identifier SEQN.
+
+```{r}
+nhanes <- nhanes_demo %>%
+  left_join(nhanes_body, by = "SEQN") %>%
+  left_join(nhanes_blood, by = "SEQN")
+```
+
+### Outcome Variable
+
+The outcome variable in this project is mean systolic blood pressure. It is computed by taking the average of up to four systolic blood pressure measurements for each participant, ignoring missing values.
+
+```{r, echo = FALSE}
+nhanes <- nhanes %>%
+  mutate(
+    mean_sysbp = rowMeans(
+      select(., BPXSY1, BPXSY2, BPXSY3, BPXSY4),
+      na.rm = TRUE
+    )
+  )
+
+summary(nhanes$mean_sysbp)
+```
+
+This result shows that the mean of systolic blood pressure ranges from about 73 to 238 mmHg, with a median value of about 118 mmHg. Some missing values remain, therefore, this means that not all participants have complete blood pressure measurements.
+
+### Data Preview
+
+The 6x4 table below shows a small preview of the merged dataset, including the outcome variable and selected predictors.
+
+The preview shows that the dataset includes participant age, body mass index (BMI), and mean systolic blood pressure. Some observations contain missing values for systolic blood pressure, which is expected since not all participants have complete blood pressure measurements.
+
+```{r, echo=FALSE}
+nhanes %>%
+  select(SEQN, RIDAGEYR, BMXBMI, mean_sysbp) %>%
+  slice(1:6)
+```
+
+### Data Visualization
+
+-   Plot 1
+
+```{r, echo = FALSE, message=FALSE, warning= FALSE}
+ggplot(nhanes, aes(x = mean_sysbp)) +
+  geom_histogram(bins = 30, fill = "steelblue", color = "white") +
+  labs(
+    title = "Distribution of Mean Systolic Blood Pressure",
+    x = "Mean Systolic Blood Pressure (mmHg)",
+    y = "Count"
+  )
+```
+
+This histogram shows that mean systolic blood pressure is right-skewed, with most participants having values between roughly 100 and 140 mmHg. This range suits well with what is commonly seen in population-level blood pressure data, where extremely high values are less frequent.
+
+-   Plot 2
+
+```{r, echo = FALSE, message=FALSE, warning= FALSE}
+ggplot(nhanes, aes(x = RIDAGEYR, y = mean_sysbp)) +
+  geom_point(alpha = 0.3) +
+  geom_smooth(method = "loess", se = FALSE, color = "red") +
+  labs(
+    title = "Mean Systolic Blood Pressure vs Age",
+    x = "Age (years)",
+    y = "Mean Systolic Blood Pressure (mmHg)"
+  )
+```
+
+The scatter plot of mean systolic blood pressure versus age reveals a clear upward trend. As age increases, systolic blood pressure generally increases as well, suggesting that age is an important factor associated with blood pressure.
+
+-   Plot 3
+
+```{r, echo = FALSE, message=FALSE, warning= FALSE}
+ggplot(nhanes, aes(x = BMXBMI, y = mean_sysbp)) +
+  geom_point(alpha = 0.3) +
+  geom_smooth(method = "loess", se = FALSE, color = "red") +
+  labs(
+    title = "Mean Systolic Blood Pressure vs BMI",
+    x = "Body Mass Index (BMI)",
+    y = "Mean Systolic Blood Pressure (mmHg)"
+  )
+```
+
+The relationship between BMI and mean systolic blood pressure is also positive, though it appears weaker than the relationship with age. While individuals with higher BMI tend to have higher blood pressure on average, the overall pattern shows more variability. This suggests that BMI may influence blood pressure, but not as strongly or consistently as age.
+
+-   Plot 4
+
+```{r, echo = FALSE, message=FALSE, warning= FALSE}
+ggplot(nhanes, aes(x = factor(RIAGENDR), y = mean_sysbp)) +
+  geom_boxplot(fill = "lightgray") +
+  labs(
+    title = "Mean Systolic Blood Pressure by Sex",
+    x = "Sex",
+    y = "Mean Systolic Blood Pressure (mmHg)"
+  )
+```
+
+The boxplot compares the distribution of mean systolic blood pressure between males and females. Overall, the median blood pressure values appear slightly higher for males than for females, although the distributions overlap substantially.
+
+Both groups show a similar spread, indicating that elevated systolic blood pressure occurs in both sexes. While sex appears to be associated with small differences in blood pressure levels, the overlap between the two distributions suggests that sex alone may not be a strong predictor of systolic blood pressure compared to variables such as age or BMI.
+
+## Setting up Model
+
+With the exploratory analysis complete, we then need to set up the model. This involves separating the data into training and testing sets and selecting the variables used to predict mean systolic blood pressure.
+
+### Train/Test Split
+
+To see how well the model performs on new data, the dataset was randomly split into training and testing sets. The training set was used to fit the linear regression model, while the testing set was kept aside for evaluation. A 75/25 split was chosen to balance model training with performance assessment.
+
+```{r, echo=FALSE, message=FALSE, warning=FALSE}
+set.seed(123)
+
+nhanes_split <- initial_split(nhanes, prop = 0.75, strata = mean_sysbp)
+
+nhanes_train <- training(nhanes_split)
+nhanes_test  <- testing(nhanes_split)
+```
+
+```{r, echo=FALSE, message=FALSE, warning=FALSE}
+dim(nhanes_train)
+dim(nhanes_test)
+```
+
+After splitting the data, the training set contained 6,939 observations, while the testing set contained 2,315 observations. Both datasets have the same set of 87 variables. This split provides a large training sample for fitting the model while preserving a sufficiently sized testing set for evaluating model performance.
+
+### Cross Validation
+
+Cross-validation is a commonly used technique in machine learning to evaluate model performance by repeatedly splitting the training data into smaller training and validation sets. This process helps provide insight into how well a model is likely to perform on new, unseen data.
+
+In this project, we are just using a single train–test split instead of k-fold cross-validation. The model was trained using the training dataset and evaluated on a separate testing dataset. Since a simple linear regression model was used and no hyperparameter tuning was required, this approach was sufficient for assessing model performance.
+
+### Model Specification
+
+This project uses a supervised learning approach, as the outcome variable is observed and used to train the model. The response variable, mean systolic blood pressure, is continuous, making this a regression problem.
+
+From a modeling perspective, the relationship between the predictors and the response can be written as:
+
+$Y = f(X) + \varepsilon$
+
+-   $Y$ represents mean systolic blood pressure
+-   $X$ includes age, body mass index (BMI), and sex
+-   $f$ is a linear function estimated from the data
+-   $\varepsilon$ represents random error
+
+A linear regression model was chosen because it provides an interpretable framework for modeling continuous outcomes and aligns with the goals of understanding how key predictors relate to blood pressure.
+
+```{r, echo=FALSE, message=FALSE, warning=FALSE}
+bp_model <- lm(
+  mean_sysbp ~ RIDAGEYR + BMXBMI + factor(RIAGENDR),
+  data = nhanes_train
+)
+```
+
+The linear regression model was fit using the training dataset only. This step corresponds to fitting the supervised learning model on labeled data, where the outcome variable is known.
+
+### Model Building Process
+
+The model was built using a standard regression workflow. The goal was to predict mean systolic blood pressure, which is a continuous outcome, so a linear regression model was chosen for its simplicity and interpretability.
+
+To evaluate how well the model would perform on new data, the dataset was split into training and testing sets. The model was fit using only the training data, while the testing data was kept separate and used later for evaluation.
+
+Predictors were selected based on prior medical knowledge and patterns observed during exploratory data analysis. Age, body mass index (BMI), and sex were included because they are well-known factors related to blood pressure and showed clear relationships with the outcome in the data.
+
+The linear regression model was then fit to the training dataset. Since linear regression does not require hyperparameter tuning, no additional tuning or cross-validation steps were needed. After fitting the model, predictions were generated for the testing dataset.
+
+Finally, model performance was assessed using the root mean squared error (RMSE) and by comparing observed and predicted values. This helped evaluate how well the model generalizes to unseen data.
+
+## Model Results
+
+```{r, echo = FALSE}
+summary(bp_model)
+```
+
+The results of the linear regression model indicate that age, body mass index (BMI), and sex are all significantly associated with mean systolic blood pressure. Age shows a strong positive relationship with blood pressure, with systolic blood pressure increasing by approximately 0.5 mmHg for each additional year of age, holding other variables constant. BMI is also positively associated with systolic blood pressure, with higher BMI corresponding to higher average blood pressure levels.
+
+Sex is a significant predictor as well, with the coefficient indicating that individuals in sex category 2 have, on average, slightly lower systolic blood pressure compared to the reference group. All predictors are statistically significant at the 0.001 level.
+
+The model explains approximately 40% of the variability in mean systolic blood pressure, as indicated by the adjusted R-squared value, suggesting that while the model captures important predictors, additional factors may also contribute to blood pressure variation.
+
+## Model Evaluation
+
+This model's performance was evaluated using the testing dataset, which was not used during training. To measure prediction accuracy, the root mean squared error was calculated. RMSE represents the typical difference between the predicted and observed mean systolic blood pressure values, measured in mmHg.
+
+### Root Mean Squared Error (RMSE)
+
+```{r, message=FALSE, warning=FALSE}
+nhanes_test <- nhanes_test %>%
+  mutate(predicted_sysbp = predict(bp_model, newdata = nhanes_test))
+
+rmse <- sqrt(mean((nhanes_test$mean_sysbp - nhanes_test$predicted_sysbp)^2, na.rm = TRUE))
+rmse
+```
+
+### Observed vs Predicted Plot
+
+```{r, echo=FALSE, message=FALSE, warning=FALSE}
+
+ggplot(nhanes_test, aes(x = mean_sysbp, y = predicted_sysbp)) +
+  geom_point(alpha = 0.4) +
+  geom_abline(slope = 1, intercept = 0, color = "red") +
+  labs(
+    title = "Observed vs Predicted Mean Systolic Blood Pressure",
+    x = "Observed Mean SBP",
+    y = "Predicted Mean SBP"
+  )
+
+```
+
+On the testing data, the RMSE was approximately 15.5 mmHg. This means that the model’s predictions are usually within about 15 mmHg of the actual blood pressure values. Given that blood pressure naturally varies across individuals and that the model is fairly simple, this level of error is reasonable.
+
+The observed versus predicted plot helps visualize model performance. Many points fall close to the 45-degree reference line, showing that the model captures the overall trend in the data. However, the points spread out more at higher blood pressure values, indicating that predictions are less accurate for individuals with very high systolic blood pressure.
+
+Overall, the model shows moderate predictive performance. It captures the main patterns in the data but could likely be improved by adding more predictors or using a more flexible modeling approach.
+
+## Results from the Best Fitting Model
+
+The final model chosen for this project was a multiple linear regression model trained on the training dataset. The model used age, body mass index (BMI), and sex as predictors of mean systolic blood pressure. These variables were selected because they are commonly linked to blood pressure and showed clear relationships during exploratory data analysis.
+
+To test how well the model performs on new data, predictions were generated for the testing dataset. Model performance was summarized using RMSE, which provides an easy-to-understand measure of prediction error.
+
+The model achieved an RMSE of approximately 15–16 mmHg on the testing data. This indicates that the model performs reasonably well for a baseline regression model. The observed versus predicted plot shows that the model generally follows the correct trend, especially for typical blood pressure values. Larger errors mainly occur at very high blood pressure levels, where the model struggles more.
+
+Overall, this linear regression model provides a solid and interpretable baseline for predicting systolic blood pressure using real-world health data.
+
+## Model Interpretation
+
+The fitted linear regression model helps explain how age, BMI, and sex are related to mean systolic blood pressure. Among the predictors, age appears to have the strongest relationship with blood pressure. As age increases, systolic blood pressure also tends to increase, which is consistent with what is commonly observed in health studies.
+
+BMI also shows a positive relationship with systolic blood pressure. People with higher BMI generally have higher blood pressure, although this effect is smaller compared to age. This suggests that body composition plays a role, but it is not the most important factor in the model.
+
+Sex was included to account for biological differences between males and females. The results suggest that blood pressure differs by sex even after accounting for age and BMI. This shows that demographic factors still add useful information to the model.
+
+Overall, the direction of these relationships makes sense and aligns with existing medical knowledge. While the model is simple, it captures meaningful patterns in the data and provides a clear and interpretable way to understand how key factors relate to systolic blood pressure.
+
+## Conclusion
+
+In this project, a supervised learning approach was used to predict mean systolic blood pressure using data from NHANES. A linear regression model was fit using age, BMI, and sex as predictors.
+
+The model showed moderate predictive performance on the testing data, with an RMSE of about 15.5 mmHg. Age was the strongest predictor of systolic blood pressure, while BMI and sex also contributed to the predictions.
+
+Although the model is simple, it captures meaningful relationships that are consistent with medical knowledge. Future work could include additional predictors or more flexible models to further improve prediction accuracy.
